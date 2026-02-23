@@ -40,7 +40,7 @@ exports.handler = async (event) => {
     const parsed = validateURL(rawURL);
     if (!parsed) return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: "Invalid or blocked URL" }) };
 
-    const apiKey = process.env.PSI_API_KEY || "";
+    const apiKey = process.env.PSI_API_KEY || "AIzaSyCms6qScOKvGQ6yVAcI1IqSEEbaVBjvkvY";
 
     let apiURL = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(parsed.href)}&strategy=mobile&category=PERFORMANCE&category=ACCESSIBILITY&category=BEST_PRACTICES&category=SEO`;
     if (apiKey) apiURL += `&key=${apiKey}`;
