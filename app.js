@@ -33,6 +33,13 @@
         impactMedium: { en: "Medium", fr: "Moyen" },
         impactLow: { en: "Low", fr: "Faible" },
         auto: { en: "Auto", fr: "Auto" },
+        stepFetch: { en: "Fetching homepage…", fr: "Récupération de la page d'accueil…" },
+        stepMeta: { en: "Checking meta tags & headings…", fr: "Vérification des balises meta et titres…" },
+        stepLinks: { en: "Scanning links & images…", fr: "Analyse des liens et images…" },
+        stepFiles: { en: "Checking robots.txt, sitemap, llms.txt…", fr: "Vérification robots.txt, sitemap, llms.txt…" },
+        stepBroken: { en: "Testing sample links for errors…", fr: "Test d'un échantillon de liens…" },
+        stepPSI: { en: "Running PageSpeed Insights (may take 20-30s)…", fr: "Exécution de PageSpeed Insights (peut prendre 20-30s)…" },
+        stepDone: { en: "Analysis complete ✓", fr: "Analyse terminée ✓" },
     };
 
     /* ── Impact multipliers ────────────────────────────────── */
@@ -502,6 +509,9 @@
         }
     }
 
+    /* ── PSI API key (public, rate-limited) ────────────────── */
+    var PSI_API_KEY = "AIzaSyCms6qScOKvGQ6yVAcI1IqSEEbaVBjvkvY";
+
     /* ── Analyze ───────────────────────────────────────────── */
     function normalizeURL(raw) {
         var u = raw.trim();
@@ -510,6 +520,93 @@
         try { new URL(u); } catch { return null; }
         if (!/^https?:/i.test(new URL(u).protocol)) return null;
         return u;
+    }
+
+    /* ── Animated loading steps ─────────────────────────────── */
+    var AUDIT_STEPS = [
+        { key: "stepFetch", id: "as_fetch" },
+        { key: "stepMeta", id: "as_meta" },
+        { key: "stepLinks", id: "as_links" },
+        { key: "stepFiles", id: "as_files" },
+        { key: "stepBroken", id: "as_broken" },
+        { key: "stepPSI", id: "as_psi" },
+    ];
+
+    function createStepsUI(container) {
+        container.innerHTML = "";
+        var wrap = document.createElement("div");
+        wrap.className = "audit-steps";
+        wrap.id = "auditSteps";
+        AUDIT_STEPS.forEach(function (s) {
+            var row = document.createElement("div");
+            row.className = "audit-step";
+            row.id = s.id;
+            row.innerHTML =
+                '<span class="step-icon pending" id="' + s.id + '_icon"></span>' +
+                '<span class="step-label">' + t(s.key) + '</span>' +
+                '<span class="step-time" id="' + s.id + '_time"></span>';
+            wrap.appendChild(row);
+        });
+        container.appendChild(wrap);
+    }
+
+    function setStep(id, status, elapsed) {
+        var row = document.getElementById(id);
+        var icon = document.getElementById(id + "_icon");
+        var timeEl = document.getElementById(id + "_time");
+        if (!row) return;
+        row.classList.add("visible");
+        row.classList.remove("active", "done", "error");
+        icon.className = "step-icon";
+        if (status === "running") {
+            row.classList.add("active");
+            icon.classList.add("running");
+            icon.textContent = "";
+        } else if (status === "done") {
+            row.classList.add("done");
+            icon.classList.add("success");
+            icon.textContent = "✓";
+        } else if (status === "error") {
+            row.classList.add("error");
+            icon.classList.add("fail");
+            icon.textContent = "✗";
+        }
+        if (elapsed != null && timeEl) {
+            timeEl.textContent = (elapsed / 1000).toFixed(1) + "s";
+        }
+    }
+
+    function revealStep(id) {
+        var row = document.getElementById(id);
+        if (row) { row.classList.add("visible"); }
+    }
+
+    /* ── Fetch PSI directly from browser (bypasses Netlify timeout) */
+    async function fetchPSIDirect(url) {
+        var apiURL = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed" +
+            "?url=" + encodeURIComponent(url) +
+            "&strategy=mobile" +
+            "&category=PERFORMANCE&category=ACCESSIBILITY&category=BEST_PRACTICES&category=SEO" +
+            "&key=" + PSI_API_KEY;
+
+        var resp = await fetch(apiURL);
+        var data = await resp.json();
+
+        if (data.error) throw new Error(data.error.message || "PSI API error");
+
+        var cats = data.lighthouseResult && data.lighthouseResult.categories;
+        if (!cats) throw new Error("No Lighthouse data returned");
+
+        function safeScore(cat) {
+            if (!cat || cat.score == null) return 0;
+            return Math.round(cat.score * 100);
+        }
+        return {
+            performance: safeScore(cats.performance),
+            accessibility: safeScore(cats.accessibility),
+            bestPractices: safeScore(cats["best-practices"]),
+            seo: safeScore(cats.seo),
+        };
     }
 
     async function runAnalyze() {
@@ -528,66 +625,104 @@
         urlInput.value = url;
         btn.disabled = true;
         statusEl.className = "audit-status loading";
-        statusEl.textContent = t("analyzingMsg");
+        statusEl.textContent = "";
 
-        // Fire both in parallel
-        var auditP = fetch("/.netlify/functions/audit?url=" + encodeURIComponent(url))
-            .then(function (r) { return r.json(); })
-            .catch(function (e) { return { ok: false, error: e.message }; });
+        // Build animated steps UI
+        createStepsUI(statusEl);
 
-        var psiP = fetch("/.netlify/functions/pagespeed?url=" + encodeURIComponent(url))
-            .then(function (r) { return r.json(); })
-            .catch(function (e) { return { ok: false, error: e.message }; });
+        // Stagger reveal steps
+        var stepIds = AUDIT_STEPS.map(function (s) { return s.id; });
+        for (var si = 0; si < stepIds.length; si++) {
+            (function (idx) {
+                setTimeout(function () { revealStep(stepIds[idx]); }, idx * 80);
+            })(si);
+        }
 
-        // Handle audit
+        var t0, elapsed;
+
+        // ─── Step 1-5: Audit via Netlify function ───
+        t0 = Date.now();
+        setTimeout(function () { setStep("as_fetch", "running"); }, 0);
+        setTimeout(function () { setStep("as_meta", "running"); }, 200);
+        setTimeout(function () { setStep("as_links", "running"); }, 400);
+        setTimeout(function () { setStep("as_files", "running"); }, 600);
+        setTimeout(function () { setStep("as_broken", "running"); }, 800);
+
         try {
-            var auditRes = await auditP;
+            var auditRes = await fetch("/.netlify/functions/audit?url=" + encodeURIComponent(url))
+                .then(function (r) { return r.json(); });
+
+            elapsed = Date.now() - t0;
+
             if (auditRes.ok) {
                 state.audit = auditRes;
                 state.auditTS = new Date().toISOString();
                 applyAutoChecks(auditRes);
-                statusEl.textContent = t("analyzeDone") + " " + t("psiRunning");
+                setStep("as_fetch", "done", elapsed);
+                setStep("as_meta", "done", elapsed);
+                setStep("as_links", "done", elapsed);
+                setStep("as_files", "done", elapsed);
+                setStep("as_broken", "done", elapsed);
             } else {
-                statusEl.className = "audit-status error";
-                statusEl.textContent = t("analyzeError") + (auditRes.error || "Unknown");
+                setStep("as_fetch", "error", elapsed);
+                setStep("as_meta", "error", elapsed);
+                setStep("as_links", "error", elapsed);
+                setStep("as_files", "error", elapsed);
+                setStep("as_broken", "error", elapsed);
+                console.warn("[SEO Audit] Audit error:", auditRes.error);
             }
         } catch (e) {
-            statusEl.className = "audit-status error";
-            statusEl.textContent = t("analyzeError") + e.message;
+            elapsed = Date.now() - t0;
+            setStep("as_fetch", "error", elapsed);
+            setStep("as_meta", "error", elapsed);
+            setStep("as_links", "error", elapsed);
+            setStep("as_files", "error", elapsed);
+            setStep("as_broken", "error", elapsed);
+            console.error("[SEO Audit] Audit exception:", e);
         }
 
-        // Handle PSI
+        // ─── Step 6: PageSpeed (direct browser call) ───
+        t0 = Date.now();
+        setStep("as_psi", "running");
+
         try {
-            var psiRes = await psiP;
-            console.log("[SEO Audit] PSI response:", psiRes);
-            if (psiRes.ok && psiRes.scores) {
-                state.psi = {
-                    performance: psiRes.scores.performance,
-                    accessibility: psiRes.scores.accessibility,
-                    bestPractices: psiRes.scores.bestPractices,
-                    seo: psiRes.scores.seo,
-                };
-                applyPSIAutoCheck();
-                statusEl.className = "audit-status";
-                statusEl.textContent = t("analyzeDone") + " " + t("psiDone");
-            } else {
-                if (statusEl.className !== "audit-status error") {
-                    statusEl.className = "audit-status";
-                }
-                var errMsg = psiRes.error || "Unknown error";
-                console.warn("[SEO Audit] PSI error:", errMsg);
-                statusEl.textContent += " " + t("psiError") + errMsg;
-            }
+            var scores = await fetchPSIDirect(url);
+            elapsed = Date.now() - t0;
+            console.log("[SEO Audit] PSI scores:", scores);
+
+            state.psi = {
+                performance: scores.performance,
+                accessibility: scores.accessibility,
+                bestPractices: scores.bestPractices,
+                seo: scores.seo,
+            };
+            applyPSIAutoCheck();
+            setStep("as_psi", "done", elapsed);
         } catch (e) {
-            console.error("[SEO Audit] PSI exception:", e);
-            statusEl.textContent += " " + t("psiError") + e.message;
+            elapsed = Date.now() - t0;
+            console.error("[SEO Audit] PSI error:", e);
+            setStep("as_psi", "error", elapsed);
         }
 
+        // ─── Finalize ───
         persist();
         renderPSI();
         renderGroups();
         renderScore();
         btn.disabled = false;
+
+        // Show completion message after a beat
+        setTimeout(function () {
+            var doneRow = document.createElement("div");
+            doneRow.className = "audit-step visible";
+            doneRow.style.opacity = "1";
+            doneRow.style.fontWeight = "600";
+            doneRow.innerHTML =
+                '<span class="step-icon success">✓</span>' +
+                '<span class="step-label">' + t("stepDone") + '</span>';
+            var wrap = $("#auditSteps");
+            if (wrap) wrap.appendChild(doneRow);
+        }, 400);
     }
 
     /* ── Full render ───────────────────────────────────────── */
