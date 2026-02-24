@@ -555,6 +555,12 @@
         var icon = document.getElementById(id + "_icon");
         var timeEl = document.getElementById(id + "_time");
         if (!row) return;
+
+        // Prevent staggered "running" timeouts from overriding terminal states
+        if (status === "running" && (row.classList.contains("done") || row.classList.contains("error"))) {
+            return;
+        }
+
         row.classList.add("visible");
         row.classList.remove("active", "done", "error");
         icon.className = "step-icon";
