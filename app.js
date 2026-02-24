@@ -559,27 +559,32 @@
         // Handle PSI
         try {
             var psiRes = await psiP;
+            console.log("[SEO Audit] PSI response:", psiRes);
             if (psiRes.ok && psiRes.scores) {
-                state.psi = psiRes.scores;
+                state.psi = {
+                    performance: psiRes.scores.performance,
+                    accessibility: psiRes.scores.accessibility,
+                    bestPractices: psiRes.scores.bestPractices,
+                    seo: psiRes.scores.seo,
+                };
                 applyPSIAutoCheck();
-                // Update PSI inputs
-                PSI_METRICS.forEach(function (m) {
-                    var inp = document.getElementById("psi_" + m.key);
-                    if (inp && psiRes.scores[m.key] != null) inp.value = psiRes.scores[m.key];
-                });
                 statusEl.className = "audit-status";
                 statusEl.textContent = t("analyzeDone") + " " + t("psiDone");
             } else {
                 if (statusEl.className !== "audit-status error") {
                     statusEl.className = "audit-status";
                 }
-                statusEl.textContent += " " + t("psiError") + (psiRes.error || "");
+                var errMsg = psiRes.error || "Unknown error";
+                console.warn("[SEO Audit] PSI error:", errMsg);
+                statusEl.textContent += " " + t("psiError") + errMsg;
             }
         } catch (e) {
+            console.error("[SEO Audit] PSI exception:", e);
             statusEl.textContent += " " + t("psiError") + e.message;
         }
 
         persist();
+        renderPSI();
         renderGroups();
         renderScore();
         btn.disabled = false;

@@ -58,14 +58,22 @@ exports.handler = async (event) => {
                     }
                     const cats = data.lighthouseResult && data.lighthouseResult.categories;
                     if (!cats) {
+                        console.log("[PSI] No categories in response. Keys:", Object.keys(data));
+                        if (data.lighthouseResult) console.log("[PSI] lighthouseResult keys:", Object.keys(data.lighthouseResult));
                         return resolve({ statusCode: 502, headers, body: JSON.stringify({ ok: false, error: "No lighthouse data returned" }) });
                     }
+                    console.log("[PSI] Category keys:", Object.keys(cats));
+                    function safeScore(cat) {
+                        if (!cat || cat.score == null) return 0;
+                        return Math.round(cat.score * 100);
+                    }
                     const scores = {
-                        performance: Math.round((cats.performance ? cats.performance.score : 0) * 100),
-                        accessibility: Math.round((cats.accessibility ? cats.accessibility.score : 0) * 100),
-                        bestPractices: Math.round((cats["best-practices"] ? cats["best-practices"].score : 0) * 100),
-                        seo: Math.round((cats.seo ? cats.seo.score : 0) * 100),
+                        performance: safeScore(cats.performance),
+                        accessibility: safeScore(cats.accessibility),
+                        bestPractices: safeScore(cats["best-practices"]),
+                        seo: safeScore(cats.seo),
                     };
+                    console.log("[PSI] Extracted scores:", scores);
                     resolve({ statusCode: 200, headers, body: JSON.stringify({ ok: true, url: parsed.href, strategy: "mobile", scores }) });
                 } catch {
                     resolve({ statusCode: 502, headers, body: JSON.stringify({ ok: false, error: "Failed to parse PSI response" }) });
